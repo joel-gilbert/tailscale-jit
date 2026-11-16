@@ -742,6 +742,57 @@ Two things to know:
   stop jitd first and copy `jit.db-wal` along with `jit.db` if it's there:
   after a crash, the latest changes are still in it.
 
+### Keeping the data on a database server
+
+By default jitd keeps everything in a SQLite file next to it. It can use a
+Postgres or MySQL database instead, which is useful when the host has no
+durable disk of its own (a container), or when you'd rather have the
+database managed, backed up and replicated by something else. Give jitd a
+URL in place of the file:
+
+```sh
+# Postgres, and anything that speaks its protocol (CockroachDB, AlloyDB,
+# Cloud SQL, RDS, Neon, ...)
+JITD_DATABASE_URL='postgres://jitd:PASSWORD@db.example.com:5432/jitd?sslmode=require'
+
+# MySQL, and MySQL-compatible servers
+JITD_DATABASE_URL='mysql://jitd:PASSWORD@db.example.com:3306/jitd?tls=true'
+# ... or through a Unix socket, such as the Cloud SQL Auth Proxy's
+JITD_DATABASE_URL='mysql://jitd:PASSWORD@/jitd?socket=/cloudsql/project:region:instance'
+```
+
+`-data` takes the same URL, but the environment variable keeps the
+password off the command line (and out of `ps`). Postgres URLs take the
+usual [libpq parameters](https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-PARAMKEYWORDS),
+including `host=/path` for a socket. Other parameters on a MySQL URL go to
+the [driver](https://github.com/go-sql-driver/mysql#parameters).
+
+How it behaves:
+
+- **Create the database, not the tables.** Give jitd an empty database
+  (or Postgres schema) of its own and a user that can create tables in it;
+  jitd creates its tables on the first start. It refuses a database that
+  already has tables called `workflows`, `requests` or `settings` that
+  aren't its own.
+- **Still one jitd at a time.** jitd keeps a working copy in memory, so
+  two of them writing to one database would overwrite each other. A lease
+  in the `jitd_lock` table enforces this: jitd renews it every 10 seconds,
+  every write checks it, and a second jitd waits up to 35 seconds for it,
+  then refuses to start. A jitd that stopped cleanly releases it at once;
+  after a crash, the next one waits for it to expire (30 seconds). If jitd
+  loses the lease (the database was unreachable for too long), it exits,
+  so a supervisor such as systemd or Kubernetes starts it again.
+- **The node's identity stays on disk.** `-state-dir` is still a
+  directory, so keep it on durable storage: losing it makes jitd a new
+  machine on the tailnet, although the flows and history survive in the
+  database.
+- **Same tables.** The schema matches the SQLite one, with each object as
+  JSON in `data`, so the queries above work with your database's own
+  JSON functions, and `-policy-snippet` reads the database alongside a
+  running jitd. Moving existing data from SQLite to a server isn't
+  automatic: copy the rows of `workflows`, `requests` and `settings`
+  with jitd stopped.
+
 ### Upgrading to a new release
 
 Moving to a newer jitd is three things: download the binary from the
@@ -951,7 +1002,7 @@ expired attribute about a minute after the expiry time (we measured about
 |---|---|---|
 | `-admins` | none | who may manage flows and see every request: logins, `group:`, `tag:` (not `autogroup:admin`; use a group such as `group:jit-admins`). With a group, adding an admin is a policy edit that takes effect within a minute, no restart |
 | `-state-dir` | `tsnet-state` | the node's identity; keep it |
-| `-data` | `jit.db` | the SQLite database with the approval flows and access requests. Name an older jitd's `.json` file and jitd uses the `.db` of the same name, filled from the `.json` the first time |
+| `-data` | `jit.db` | where the approval flows and access requests are kept: a SQLite file, or a Postgres or MySQL URL (see [Keeping the data on a database server](#keeping-the-data-on-a-database-server)). `JITD_DATABASE_URL` overrides it. Name an older jitd's `.json` file and jitd uses the `.db` of the same name, filled from the `.json` the first time |
 | `-env-file` | `~/.config/jitd/env` (Linux), `~/Library/Application Support/jitd/env` (macOS) | Tailscale API credentials: `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET`, or `TS_API_KEY`. Optionally `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and `SLACK_ALLOWED_DOMAINS` (see Slack) |
 | `-hostname` | `jit` | the machine name on the tailnet |
 | `-tag` | `tag:jit` | the tag jitd runs as, used in the policy snippet |

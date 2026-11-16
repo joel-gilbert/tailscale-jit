@@ -1,0 +1,56 @@
+name: Test
+
+# Runs the tests on every pull request: once with the default SQLite store,
+# and the store and service tests again against Postgres and MySQL.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  sqlite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
+  servers:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: jitd
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: test
+          MYSQL_DATABASE: jitd
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -uroot -ptest --silent" --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      POSTGRES: postgres://postgres:test@127.0.0.1:5432/jitd?sslmode=disable
+      MYSQL: mysql://root:test@127.0.0.1:3306/jitd
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Store tests
+        run: JITD_TEST_POSTGRES_URL="$POSTGRES" JITD_TEST_MYSQL_URL="$MYSQL" go test ./jitd/internal/jit -run 'Server|DatabaseURLs' -count=1 -v
+      - name: Service tests on Postgres
+        run: JITD_TEST_STORE_URL="$POSTGRES" go test ./jitd/internal/jit -count=1 -p 1
+      - name: Service tests on MySQL
+        run: JITD_TEST_STORE_URL="$MYSQL" go test ./jitd/internal/jit -count=1 -p 1

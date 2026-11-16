@@ -64,22 +64,35 @@ func timeColumn(t time.Time) string {
 // comparing every row with the database. Update then returns nil.
 var errNoChange = errors.New("no change")
 
-// Store keeps approval flows and access requests in a SQLite database, with a
-// working copy in memory. Each row holds the object as JSON, plus a few
-// columns for ad-hoc queries. An Update writes only the rows that changed,
-// in one transaction.
+// Store keeps approval flows and access requests in a database, with a
+// working copy in memory. The database is a SQLite file by default, or a
+// Postgres or MySQL server named by a URL (see Open). Each row holds the
+// object as JSON, plus a few columns for ad-hoc queries. An Update writes
+// only the rows that changed, in one transaction.
 //
 // jitd must be the only writer: it does not see changes made to the database
-// by anything else while it runs.
+// by anything else while it runs. On a server, a lease that jitd renews
+// while it runs makes sure of it, and every write checks it still holds it.
 type Store struct {
 	db      *sql.DB
+	dia     *dialect
 	mu      sync.Mutex
 	d       Data
 	saved   map[rowKey][]byte // each row's JSON as it is in the database
 	changes uint64
 	broken  error // set if the working copy could not be put back after a failed update
 
-	// Path is the database file. Imported is the JSON file it was just
+	// holder identifies this jitd in a server database's writer lease;
+	// leaseOK is until when the lease is surely still ours (by this host's
+	// clock, renewed with a margin). lost reports losing it, and stopWatch
+	// stops renewing.
+	holder    string
+	leaseOK   time.Time
+	lost      chan error
+	stopWatch chan struct{}
+
+	// Path is the database file, or a server's URL without its password.
+	// Imported is the JSON file it was just
 	// filled from, or "". Ignored is a JSON file named in place of the
 	// database that was not read because the database already existed.
 	Path, Imported, Ignored string
@@ -93,8 +106,16 @@ type rowKey struct {
 	id    string
 }
 
-// Open opens the SQLite database at path, creating it if needed.
+// Open opens the database at target, creating it if needed: a SQLite file,
+// or a database server named by a URL:
 //
+//	postgres://user:password@host:5432/jitd?sslmode=require
+//	mysql://user:password@host:3306/jitd?tls=true
+//
+// The server database must exist (jitd creates its tables in it) and must
+// not be used by another jitd at the same time.
+//
+// For a SQLite file,
 // It also upgrades from the JSON data file of older jitd versions:
 //   - If path ends in ".json", the database is the same name with ".db".
 //     When that does not exist yet, it is filled from the JSON file.
@@ -104,6 +125,9 @@ type rowKey struct {
 // The JSON file is left alone. The import is all or nothing: the database is
 // built under another name and renamed into place when it is complete.
 func Open(path string) (*Store, error) {
+	if d := serverDialect(path); d != nil {
+		return openServer(d, path, false)
+	}
 	var from string
 	if filepath.Ext(path) == ".json" {
 		from = path
@@ -159,6 +183,9 @@ func Open(path string) (*Store, error) {
 
 // OpenReadOnly opens an existing database without changing it.
 func OpenReadOnly(path string) (*Store, error) {
+	if d := serverDialect(path); d != nil {
+		return openServer(d, path, true)
+	}
 	if filepath.Ext(path) == ".json" {
 		path = path[:len(path)-len(".json")] + ".db"
 	}
@@ -208,7 +235,7 @@ func openDB(path string, readOnly bool) (*Store, error) {
 	}
 	// jitd is the only user, and Store.mu orders every access anyway.
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, Path: path}
+	s := &Store{db: db, dia: sqliteDialect, Path: path}
 	if readOnly {
 		err = s.checkVersion()
 	} else {
@@ -299,7 +326,7 @@ func (s *Store) GetSetting(key string, v any) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var b []byte
-	err := s.db.QueryRow("SELECT value FROM settings WHERE key = ?", key).Scan(&b)
+	err := s.db.QueryRow(s.dia.q("SELECT value FROM settings WHERE "+s.dia.settingKey()+" = ?"), key).Scan(&b)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -320,16 +347,14 @@ func (s *Store) PutSetting(key string, v any) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err = s.db.Exec(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, key, string(b))
-	return err
+	return s.execFenced(s.dia.q(s.dia.upsertSetting), key, string(b))
 }
 
 // DeleteSetting removes the setting called key, if there is one.
 func (s *Store) DeleteSetting(key string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, err := s.db.Exec("DELETE FROM settings WHERE key = ?", key)
-	return err
+	return s.execFenced(s.dia.q("DELETE FROM settings WHERE "+s.dia.settingKey()+" = ?"), key)
 }
 
 // migrateV2 stores data as text rather than as a blob, and created_at with a
@@ -468,6 +493,11 @@ func (s *Store) importJSON(path string) error {
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.stopWatch != nil {
+		close(s.stopWatch)
+		s.stopWatch = nil
+		s.releaseLease() // so the next jitd need not wait for it to expire
+	}
 	return s.db.Close()
 }
 
@@ -605,21 +635,19 @@ func (s *Store) write(changed []row) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.fence(ctx, tx); err != nil {
+		return err
+	}
 	for _, c := range changed {
 		var err error
 		switch {
 		case c.data == nil:
 			// The table name is one of two constants, never input.
-			_, err = tx.ExecContext(ctx, "DELETE FROM "+c.key.table+" WHERE id = ?", c.key.id)
+			_, err = tx.ExecContext(ctx, s.dia.q("DELETE FROM "+c.key.table+" WHERE id = ?"), c.key.id)
 		case c.w != nil:
-			_, err = tx.ExecContext(ctx, `INSERT INTO workflows (id, name, data) VALUES (?, ?, ?)
-				ON CONFLICT (id) DO UPDATE SET name = excluded.name, data = excluded.data`,
-				c.key.id, c.w.Name, string(c.data))
+			_, err = tx.ExecContext(ctx, s.dia.q(s.dia.upsertWorkflow), c.key.id, c.w.Name, string(c.data))
 		default:
-			_, err = tx.ExecContext(ctx, `INSERT INTO requests (id, workflow_id, requester, status, created_at, data)
-				VALUES (?, ?, ?, ?, ?, ?)
-				ON CONFLICT (id) DO UPDATE SET workflow_id = excluded.workflow_id, requester = excluded.requester,
-					status = excluded.status, created_at = excluded.created_at, data = excluded.data`,
+			_, err = tx.ExecContext(ctx, s.dia.q(s.dia.upsertRequest),
 				c.key.id, c.r.WorkflowID, c.r.Requester.Login, string(c.r.Status),
 				timeColumn(c.r.CreatedAt), string(c.data))
 		}

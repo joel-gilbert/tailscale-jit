@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -101,10 +102,17 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
-	st, err := Open(filepath.Join(t.TempDir(), "jit.db"))
+	// JITD_TEST_STORE_URL runs every service test against a database
+	// server instead of a SQLite file (see store_server_test.go).
+	target := filepath.Join(t.TempDir(), "jit.db")
+	if u := os.Getenv("JITD_TEST_STORE_URL"); u != "" {
+		target = scratchServerURL(t, u)
+	}
+	st, err := Open(target)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { st.Close() })
 	h := &harness{ts: newFakeTS(), now: t0}
 	h.ts.groups = map[string][]string{"group:sre": {"Carol@example.com"}}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
