@@ -50,7 +50,12 @@ func (s *Service) CheckedSnippet(ctx context.Context, jitTag string, onlyMissing
 
 // Snippet renders the policy snippet with options.
 func (s *Service) Snippet(o SnippetOptions) string {
-	flows := s.ListWorkflows()
+	var flows []*Workflow
+	for _, w := range s.ListWorkflows() {
+		if w.Attribute != "" { // Okta-only flows need nothing in the tailnet policy
+			flows = append(flows, w)
+		}
+	}
 	// What the policy already has, per flow.
 	type state struct {
 		posture, grant bool
@@ -125,14 +130,28 @@ func (s *Service) Snippet(o SnippetOptions) string {
 	for _, w := range grants {
 		st := states[w.ID]
 		dst := w.ResourceNames()
-		src := make([]string, len(w.Requesters))
-		for i, p := range w.Requesters {
-			src[i] = string(p)
+		// okta: principals mean nothing to Tailscale. The posture is what
+		// gates access (jitd only sets it for approved requesters), so the
+		// grant can name every member in their place.
+		var src []string
+		viaOkta := false
+		for _, p := range w.Requesters {
+			if p.IsOkta() {
+				viaOkta = true
+				continue
+			}
+			src = append(src, string(p))
+		}
+		if viaOkta && !slices.Contains(src, string(AutogroupMember)) {
+			src = append(src, string(AutogroupMember))
 		}
 		fmt.Fprintf(&b, "    {\n")
 		fmt.Fprintf(&b, "      // Approval flow %q%s\n", w.Name, strings.TrimPrefix(mark(st.grant), " //"))
 		if st.grant && st.use != nil && (len(st.use.Missing) > 0 || len(st.use.Extra) > 0) {
 			fmt.Fprintf(&b, "      // Your grant's dst differs from the flow's list: it has %s; the flow lists %s.\n", list(st.use.Grants), list(dst))
+		}
+		if viaOkta {
+			fmt.Fprintf(&b, "      // Okta group requesters are checked by jitd; the posture gates the rest.\n")
 		}
 		fmt.Fprintf(&b, "      \"src\": %s,\n", list(src))
 		if len(dst) == 0 {
@@ -205,10 +224,16 @@ type PolicyUse struct {
 	// Error is set when the policy could not be read; the other fields are
 	// then unknown, not false.
 	Error string `json:"error,omitempty"`
+	// NoAttribute: the flow sets no posture attribute (it grants Okta
+	// groups only), so there is nothing in the tailnet policy to check.
+	NoAttribute bool `json:"no_attribute,omitempty"`
 }
 
 // OK reports whether the policy agrees with the flow.
 func (u *PolicyUse) OK() bool {
+	if u != nil && u.NoAttribute {
+		return true
+	}
 	return u != nil && u.Error == "" && u.Defined && !u.Unreferenced && len(u.Missing) == 0 && len(u.Extra) == 0
 }
 
@@ -241,6 +266,9 @@ func (u *PolicyUse) Problems() []string {
 // PolicyUse checks the workflow against the tailnet policy. It never fails
 // loudly: a policy that cannot be read is reported in Error.
 func (s *Service) PolicyUse(ctx context.Context, w *Workflow) *PolicyUse {
+	if w.Attribute == "" {
+		return &PolicyUse{NoAttribute: true, Defined: true, Grants: []string{}}
+	}
 	if s.PolicyCache == nil {
 		return &PolicyUse{Posture: w.Posture(), Grants: []string{}, Error: "no policy source configured"}
 	}

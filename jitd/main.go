@@ -28,6 +28,7 @@ import (
 	"github.com/atoonk/tailscale-jit/jitd/internal/jit"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jithttp"
 	"github.com/atoonk/tailscale-jit/jitd/internal/jitmcp"
+	"github.com/atoonk/tailscale-jit/jitd/internal/okta"
 	"github.com/atoonk/tailscale-jit/jitd/internal/setup"
 	"github.com/atoonk/tailscale-jit/jitd/internal/slackbot"
 	"github.com/atoonk/tailscale-jit/jitd/internal/tsapi"
@@ -46,7 +47,7 @@ func main() {
 	jitTag := flag.String("tag", "tag:jit", "tag this node runs as (used in the policy snippet)")
 	expiryInterval := flag.Duration("expiry-interval", 30*time.Second, "how often to mark approved requests past their expiry as expired")
 	policySnippet := flag.Bool("policy-snippet", false, "print the policy-file snippet for the current approval flows and exit")
-	admins := flag.String("admins", "", "comma-separated principals who may manage approval flows and see every request (logins, group:, tag:); nobody if empty")
+	admins := flag.String("admins", "", "comma-separated principals who may manage approval flows and see every request (logins, group:, okta:, tag:); nobody if empty")
 	https := flag.Bool("https", false, "serve HTTPS on :443 with a Tailscale certificate (needs HTTPS enabled for the tailnet); :80 then redirects")
 	verbose := flag.Bool("verbose", false, "log tsnet backend and every HTTP request")
 	flag.Usage = func() {
@@ -101,6 +102,37 @@ func main() {
 	// an admin re-runs it, so fixing the credentials needs no restart.
 	ts := &tsapi.Switchable{}
 	svc.TS = ts
+	// Okta, for flows that grant Okta group membership and for okta:
+	// principals: OKTA_ORG_URL and OKTA_API_TOKEN, plus the optional
+	// OKTA_GRANT_ALLOWLIST and OKTA_READ_ALLOWLIST, from the env file
+	// (re-read on use, so editing it needs no restart) or the environment.
+	oktaKeys := append(slices.Clone(okta.CredentialVars), jit.EnvOktaGrantAllowlist, jit.EnvOktaReadAllowlist)
+	oktaVars := func() map[string]string {
+		vars := map[string]string{}
+		for _, k := range oktaKeys {
+			vars[k] = os.Getenv(k)
+		}
+		if *envFile != "" {
+			if fromFile, err := setup.ReadEnvFile(*envFile); err == nil {
+				for _, k := range oktaKeys {
+					if v := fromFile[k]; v != "" {
+						vars[k] = v
+					}
+				}
+			}
+		}
+		return vars
+	}
+	svc.Okta = &okta.Dynamic{Load: oktaVars}
+	svc.OktaLimits = func() jit.OktaAllowlist { return jit.ParseOktaAllowlist(oktaVars()) }
+	if svc.OktaEnabled() {
+		lim := svc.OktaLimits()
+		log.Info("okta enabled", "grant_allowlist", lim.Grant, "read_allowlist", lim.Read)
+		if jit.AllowsAll(lim.Grant) || jit.AllowsAll(lim.Read) {
+			log.Info("an Okta allowlist is \"*\": jitd may use any Okta group its token can reach for that purpose (" +
+				jit.EnvOktaGrantAllowlist + ", " + jit.EnvOktaReadAllowlist + ")")
+		}
+	}
 	svc.PolicyCache = &jit.PolicyCache{TS: ts, TTL: time.Minute, Log: log}
 	for _, a := range strings.Split(*admins, ",") {
 		if a = strings.TrimSpace(a); a != "" {
