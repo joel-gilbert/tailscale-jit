@@ -38,10 +38,14 @@ import (
 // workflow stamps it from the tag (-X main.version=...).
 var version = "dev"
 
+// dbURLEnv names the environment variable that overrides -data, so a
+// database password need not appear on the command line.
+const dbURLEnv = "JITD_DATABASE_URL"
+
 func main() {
 	hostname := flag.String("hostname", "jit", "tailnet hostname for this node")
 	stateDir := flag.String("state-dir", "tsnet-state", "directory for the tsnet node state (keep it; otherwise the node re-registers)")
-	dataPath := flag.String("data", "jit.db", "SQLite database for approval flows and access requests. Upgrading from an older jitd: name its .json data file, and jitd uses the .db of the same name, filled from the .json the first time (a new jit.db also picks up jit-data.json next to it). The .json is left alone")
+	dataPath := flag.String("data", "jit.db", "where approval flows and access requests are kept: a SQLite file, or a database server URL (postgres://user:password@host/db or mysql://user:password@host/db; "+dbURLEnv+" overrides this flag, so the password stays out of the command line). Upgrading from an older jitd: name its .json data file, and jitd uses the .db of the same name, filled from the .json the first time (a new jit.db also picks up jit-data.json next to it). The .json is left alone")
 	apiBase := flag.String("ts-api", tsapi.DefaultBaseURL, "Tailscale API base URL")
 	envFile := flag.String("env-file", defaultEnvFile(), "file with the Tailscale API credentials (TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET, or TS_API_KEY), one KEY=VALUE per line; the environment is used for anything the file lacks. SLACK_BOT_TOKEN and SLACK_APP_TOKEN here set up Slack instead of the Slack page")
 	jitTag := flag.String("tag", "tag:jit", "tag this node runs as (used in the policy snippet)")
@@ -62,6 +66,10 @@ func main() {
 		level = slog.LevelDebug
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+
+	if v := os.Getenv(dbURLEnv); v != "" {
+		*dataPath = v
+	}
 
 	if *policySnippet {
 		store, err := jit.OpenReadOnly(*dataPath)
@@ -89,6 +97,16 @@ func main() {
 	}
 	if store.Mode&0o077 != 0 {
 		log.Warn("other users can read the database; run: chmod 600 "+store.Path, "mode", store.Mode)
+	}
+	if store.Dialect() != "sqlite" {
+		log.Info("using a database server", "kind", store.Dialect(), "database", store.Path)
+		// Losing the writer lock means another jitd could start writing:
+		// stop, and let the supervisor start jitd again.
+		go func() {
+			err := <-store.LockLost()
+			log.Error("stopping: "+err.Error(), "database", store.Path)
+			os.Exit(1)
+		}()
 	}
 	svc := &jit.Service{Store: store, Log: log, UIPorts: []string{"tcp:80"}}
 	if *https {
