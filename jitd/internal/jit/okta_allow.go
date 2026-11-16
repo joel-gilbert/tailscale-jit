@@ -18,7 +18,7 @@ import (
 //     and on every match; a group outside the list matches nobody.
 //
 // Each entry is a group name or ID; "*" matches any run of characters
-// ("jit.*", "AMG-StrongDM-*"). A list that is not set defaults to "*":
+// ("jit.*", "Team-*"). A list that is not set defaults to "*":
 // every group.
 
 // OktaAllowlist holds the two lists.

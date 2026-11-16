@@ -559,8 +559,8 @@ How it behaves:
 
 **Okta groups as requesters and approvers.** With Okta configured, a
 principal can also be `okta:<group>`, by exact group name or ID: for
-example, requesters `okta:AMG-StrongDM-Engineering` and approvers
-`okta:AMG-StrongDM-Engineering-Leads`. It works anywhere a principal
+example, requesters `okta:Engineering` and approvers
+`okta:Eng-Leads`. It works anywhere a principal
 does, including `-admins`, and for any flow, not only ones that grant Okta
 groups.
 
@@ -584,9 +584,9 @@ re-read on use like the credentials:
 
 ```sh
 # Groups a flow may add people to.
-OKTA_GRANT_ALLOWLIST=jit.*,Eng-Oncall
+OKTA_GRANT_ALLOWLIST=jit.*,On-Call
 # Groups an okta: principal may name.
-OKTA_READ_ALLOWLIST=AMG-StrongDM-*,Eng-Oncall
+OKTA_READ_ALLOWLIST=Team-*,On-Call
 ```
 
 Entries are group names or IDs, separated by commas; `*` matches any run

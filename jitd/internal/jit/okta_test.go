@@ -404,11 +404,11 @@ func TestGlobMatch(t *testing.T) {
 		pat, s string
 		want   bool
 	}{
-		{"Eng-Oncall", "Eng-Oncall", true},
-		{"Eng-Oncall", "Eng-Oncall-2", false},
-		{"jit.*", "jit.argocd.prod.admin", true},
+		{"On-Call", "On-Call", true},
+		{"On-Call", "On-Call-2", false},
+		{"jit.*", "jit.db.admin", true},
 		{"jit.*", "xjit.a", false},
-		{"AMG-*-Platform", "AMG-StrongDM-Platform", true},
+		{"Team-*-Admins", "Team-Infra-Admins", true},
 		{"*Crew*", "Pit Crew / On Call", true},
 		{"*", "anything", true},
 		{"ab*ba", "aba", false},
@@ -421,7 +421,7 @@ func TestGlobMatch(t *testing.T) {
 	if !allowed(nil, "x", "y") || allowed([]string{"a"}, "", "") || !allowed([]string{gAdmin}, gAdmin, "whatever") {
 		t.Error("allowed")
 	}
-	if l := ParseOktaAllowlist(map[string]string{EnvOktaGrantAllowlist: " jit.* , ,Eng-Oncall"}); fmt.Sprint(l.Grant) != "[jit.* Eng-Oncall]" || fmt.Sprint(l.Read) != "[*]" {
+	if l := ParseOktaAllowlist(map[string]string{EnvOktaGrantAllowlist: " jit.* , ,On-Call"}); fmt.Sprint(l.Grant) != "[jit.* On-Call]" || fmt.Sprint(l.Read) != "[*]" {
 		t.Errorf("parse = %+v", l)
 	}
 	if l := ParseOktaAllowlist(map[string]string{EnvOktaReadAllowlist: " , "}); fmt.Sprint(l.Grant) != "[*]" || fmt.Sprint(l.Read) != "[*]" || !AllowsAll(l.Grant) {
