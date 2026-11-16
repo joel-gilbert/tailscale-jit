@@ -421,8 +421,14 @@ func TestGlobMatch(t *testing.T) {
 	if !allowed(nil, "x", "y") || allowed([]string{"a"}, "", "") || !allowed([]string{gAdmin}, gAdmin, "whatever") {
 		t.Error("allowed")
 	}
-	if l := ParseOktaAllowlist(map[string]string{EnvOktaGrantAllowlist: " jit.* , ,Eng-Oncall"}); fmt.Sprint(l.Grant) != "[jit.* Eng-Oncall]" || l.Read != nil {
+	if l := ParseOktaAllowlist(map[string]string{EnvOktaGrantAllowlist: " jit.* , ,Eng-Oncall"}); fmt.Sprint(l.Grant) != "[jit.* Eng-Oncall]" || fmt.Sprint(l.Read) != "[*]" {
 		t.Errorf("parse = %+v", l)
+	}
+	if l := ParseOktaAllowlist(map[string]string{EnvOktaReadAllowlist: " , "}); fmt.Sprint(l.Grant) != "[*]" || fmt.Sprint(l.Read) != "[*]" || !AllowsAll(l.Grant) {
+		t.Errorf("defaults = %+v", l)
+	}
+	if AllowsAll([]string{"jit.*"}) {
+		t.Error("AllowsAll(jit.*)")
 	}
 }
 

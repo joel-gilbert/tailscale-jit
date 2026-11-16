@@ -128,9 +128,9 @@ func main() {
 	if svc.OktaEnabled() {
 		lim := svc.OktaLimits()
 		log.Info("okta enabled", "grant_allowlist", lim.Grant, "read_allowlist", lim.Read)
-		if len(lim.Grant) == 0 || len(lim.Read) == 0 {
-			log.Warn("an Okta allowlist is empty, so jitd may use any Okta group its token can reach for that purpose; set " +
-				jit.EnvOktaGrantAllowlist + " and " + jit.EnvOktaReadAllowlist + " in the env file")
+		if jit.AllowsAll(lim.Grant) || jit.AllowsAll(lim.Read) {
+			log.Info("an Okta allowlist is \"*\": jitd may use any Okta group its token can reach for that purpose (" +
+				jit.EnvOktaGrantAllowlist + ", " + jit.EnvOktaReadAllowlist + ")")
 		}
 	}
 	svc.PolicyCache = &jit.PolicyCache{TS: ts, TTL: time.Minute, Log: log}

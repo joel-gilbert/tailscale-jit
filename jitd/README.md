@@ -590,8 +590,8 @@ OKTA_READ_ALLOWLIST=AMG-StrongDM-*,Eng-Oncall
 ```
 
 Entries are group names or IDs, separated by commas; `*` matches any run
-of characters. An unset list allows every group (jitd logs a warning at
-startup).
+of characters. Both default to `*`, every group; jitd logs the lists in
+effect at startup.
 
 - A flow that grants a group outside `OKTA_GRANT_ALLOWLIST` can't be
   saved, and each approval checks the list again before adding anyone, so

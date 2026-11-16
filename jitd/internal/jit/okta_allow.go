@@ -1,6 +1,9 @@
 package jit
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // Okta group allowlists.
 //
@@ -15,7 +18,8 @@ import "strings"
 //     and on every match; a group outside the list matches nobody.
 //
 // Each entry is a group name or ID; "*" matches any run of characters
-// ("jit.*", "AMG-StrongDM-*"). An empty (unset) list allows every group.
+// ("jit.*", "AMG-StrongDM-*"). A list that is not set defaults to "*":
+// every group.
 
 // OktaAllowlist holds the two lists.
 type OktaAllowlist struct {
@@ -29,10 +33,24 @@ const (
 	EnvOktaReadAllowlist  = "OKTA_READ_ALLOWLIST"
 )
 
-// ParseOktaAllowlist reads the lists from env-style variables.
+// DefaultOktaAllowlist is what a list that is not set means: every group.
+const DefaultOktaAllowlist = "*"
+
+// ParseOktaAllowlist reads the lists from env-style variables. A list that
+// is not set (or has no entries) is DefaultOktaAllowlist.
 func ParseOktaAllowlist(vars map[string]string) OktaAllowlist {
-	return OktaAllowlist{Grant: splitList(vars[EnvOktaGrantAllowlist]), Read: splitList(vars[EnvOktaReadAllowlist])}
+	return OktaAllowlist{Grant: listOrDefault(vars[EnvOktaGrantAllowlist]), Read: listOrDefault(vars[EnvOktaReadAllowlist])}
 }
+
+func listOrDefault(s string) []string {
+	if l := splitList(s); len(l) > 0 {
+		return l
+	}
+	return []string{DefaultOktaAllowlist}
+}
+
+// AllowsAll reports whether list lets every group through.
+func AllowsAll(list []string) bool { return len(list) == 0 || slices.Contains(list, "*") }
 
 func splitList(s string) []string {
 	var out []string
