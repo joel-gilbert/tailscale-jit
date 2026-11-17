@@ -226,3 +226,37 @@ func mustGet(t *testing.T, h *harness, id string) *AccessRequest {
 	}
 	return r
 }
+
+// A request scheduled days ahead is not cut off by the flow's approval
+// timeout (24h by default): it stays open until its window ends.
+func TestScheduledGrantOutlivesApprovalTimeout(t *testing.T) {
+	h := newHarness(t)
+	w := h.workflow(t, schedFlow())
+	r, err := h.svc.Submit(ctx, alice, NewRequest{WorkflowID: w.ID, Duration: Duration(time.Hour), Reason: "x", StartAt: at(72 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two days on, well past the approval timeout, it is still pending.
+	h.now = t0.Add(48 * time.Hour)
+	h.svc.ExpireDue()
+	if g := mustGet(t, h, r.ID); g.Status != StatusPending {
+		t.Fatalf("after the approval timeout: %s", g.Status)
+	}
+	// And can still be approved.
+	got, err := h.svc.Approve(ctx, bob, r.ID, "")
+	if err != nil || got.Status != StatusScheduled {
+		t.Fatalf("approve = %v %+v", err, got)
+	}
+
+	// A request that starts on approval still times out as before.
+	h.now = t0
+	now, err := h.svc.Submit(ctx, carol, NewRequest{WorkflowID: w.ID, Duration: Duration(time.Hour), Reason: "y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.now = t0.Add(25 * time.Hour)
+	h.svc.ExpireDue()
+	if g, _ := h.svc.GetRequest(ctx, carol, now.ID); g.Status != StatusExpired {
+		t.Errorf("immediate request after the approval timeout: %s", g.Status)
+	}
+}
