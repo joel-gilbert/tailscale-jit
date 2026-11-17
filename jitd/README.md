@@ -534,8 +534,11 @@ pass `start_at` as an RFC 3339 time.
   the start, access begins when it is back, and still ends on time.
 - **A window, not a duration.** The access covers the window that was
   asked for. Approved after the start, it begins at once and still ends
-  with the window; still undecided when the window ends, the request
-  expires.
+  with the window.
+- **Approvers have until the window ends.** The flow's approval timeout
+  applies only to requests that start on approval; a request scheduled
+  days ahead stays open for a decision until its window ends, and then
+  expires if nobody decided.
 - **If starting fails** (an API error), the request stays scheduled with
   the error shown, and jitd tries again on every tick until the window
   ends. If the flow is disabled, deleted or changed to grant something

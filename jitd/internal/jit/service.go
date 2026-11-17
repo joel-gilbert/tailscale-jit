@@ -1242,10 +1242,16 @@ func (s *Service) ExpireDue() int {
 				r.Status, r.UpdatedAt = StatusExpired, now
 				r.Timeline = append(r.Timeline, Event{Type: "expired", Actor: "system", Note: "the scheduled window ended before access could start", At: now})
 				expired = append(expired, clone(r))
-			case r.Status == StatusPending && r.StartAt != nil && !r.StartAt.Add(time.Duration(r.Duration)).After(now):
-				r.Status, r.UpdatedAt = StatusExpired, now
-				r.Timeline = append(r.Timeline, Event{Type: "expired", Actor: "system", Note: "no decision before the requested window ended", At: now})
-				expired = append(expired, clone(r))
+			case r.Status == StatusPending && r.StartAt != nil:
+				// A request scheduled ahead stays open for a decision until
+				// its window ends, however far ahead it was filed: the
+				// flow's approval timeout is for requests that start on
+				// approval.
+				if !r.StartAt.Add(time.Duration(r.Duration)).After(now) {
+					r.Status, r.UpdatedAt = StatusExpired, now
+					r.Timeline = append(r.Timeline, Event{Type: "expired", Actor: "system", Note: "no decision before the requested window ended", At: now})
+					expired = append(expired, clone(r))
+				}
 			case r.Status == StatusPending:
 				timeout := DefaultApprovalTimeout
 				if w, ok := d.Workflows[r.WorkflowID]; ok && w.ApprovalTimeout > 0 {
